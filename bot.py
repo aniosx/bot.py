@@ -540,6 +540,7 @@ def main() -> None:
     
     # Démarrer le serveur Flask dans un thread séparé pour le ping
     flask_thread = threading.Thread(target=run_flask)
+    PORT = int(os.environ.get('PORT', 10000))
     flask_thread.daemon = True
     flask_thread.start()
     
