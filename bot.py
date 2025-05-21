@@ -1,555 +1,112 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 
-import os
-import json
-import logging
-import threading
-from flask import Flask
-from dotenv import load_dotenv
-from telegram import Update, ParseMode, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import (
-    Updater,
-    CommandHandler,
-    MessageHandler,
-    Filters,
-    CallbackContext,
-    CallbackQueryHandler
-)
+-- coding: utf-8 --
 
-# Configuration du logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+import os import json import time import random import string import logging import threading from flask import Flask from dotenv import load_dotenv from telegram import Update from telegram.ext import ( Updater, CommandHandler, MessageHandler, Filters, CallbackContext )
 
-# Chargement des variables d'environnement
-load_dotenv()
+Configuration du logging
 
-# Configuration du bot
-TOKEN = os.getenv('TELEGRAM_TOKEN')
-if not TOKEN:
-    raise ValueError("Le token TELEGRAM_TOKEN est manquant dans les variables d'environnement.")
-OWNER_ID = int(os.getenv('OWNER_ID', '144262846'))
-PORT = int(os.environ.get('PORT', 8080))
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO) logger = logging.getLogger(name)
 
-# Dictionnaire pour stocker les messages et leurs expéditeurs
-message_registry = {}
+Charger les variables d'environnement
 
-# Liste des utilisateurs bloqués (en mémoire)
-blocked_users = set()
+load_dotenv() TOKEN = os.getenv("TELEGRAM_TOKEN") OWNER_ID = int(os.getenv("OWNER_ID", "123456")) PORT = int(os.environ.get('PORT', 8080))
 
-# Fichier pour stocker les utilisateurs bloqués
-BLOCKED_USERS_FILE = 'blocked_users.json'
+Fichiers de données
 
-# Créer une application Flask pour le ping
-app = Flask(__name__)
+USERS_FILE = "users.json" BLOCKED_FILE = "blocked_users.json" CONFIG_FILE = "config.json"
 
-@app.route('/')
-def index():
-    return 'Bot Telegram en ligne!'
+Charger données persistantes
 
-def load_blocked_users():
-    """Charge la liste des utilisateurs bloqués depuis le fichier."""
-    global blocked_users
-    try:
-        if os.path.exists(BLOCKED_USERS_FILE):
-            with open(BLOCKED_USERS_FILE, 'r') as f:
-                blocked_list = json.load(f)
-                blocked_users = set(blocked_list)
-                logger.info(f"Loaded {len(blocked_users)} blocked users from file")
-    except Exception as e:
-        logger.error(f"Error loading blocked users: {e}")
+def load_json(filename, default): try: if os.path.exists(filename): with open(filename, 'r') as f: return json.load(f) except: pass return default
 
-def save_blocked_users():
-    """Sauvegarde la liste des utilisateurs bloqués dans le fichier."""
-    try:
-        with open(BLOCKED_USERS_FILE, 'w') as f:
-            json.dump(list(blocked_users), f)
-            logger.info(f"Saved {len(blocked_users)} blocked users to file")
-    except Exception as e:
-        logger.error(f"Error saving blocked users: {e}")
+def save_json(filename, data): try: with open(filename, 'w') as f: json.dump(data, f) except Exception as e: logger.error(f"Erreur en sauvegardant {filename}: {e}")
 
-def start(update: Update, context: CallbackContext) -> None:
-    """Gestionnaire de la commande /start."""
-    user = update.effective_user
-    
-    # Vérifier si l'utilisateur est bloqué
-    if user.id in blocked_users and user.id != OWNER_ID:
-        update.message.reply_text(
-            "Vous avez été bloqué et ne pouvez pas utiliser ce bot."
-        )
-        return
-    
-    update.message.reply_text(
-        f'Bonjour {user.first_name} ! Je suis un bot de relais de messages. '
-        f'Envoyez-moi un message et il sera transmis au propriétaire du bot.'
-    )
-    
-    # Informer le propriétaire qu'un nouvel utilisateur a démarré le bot
-    if user.id != OWNER_ID:
-        context.bot.send_message(
-            chat_id=OWNER_ID,
-            text=f"Nouvel utilisateur: {user.first_name} (@{user.username or 'Sans username'}) [ID: {user.id}] a démarré le bot."
-        )
+users = load_json(USERS_FILE, {}) blocked = set(load_json(BLOCKED_FILE, [])) config = load_json(CONFIG_FILE, {"require_password": False, "password": ""}) message_log = {}  # Pour anti-spam
 
-def help_command(update: Update, context: CallbackContext) -> None:
-    """Gestionnaire de la commande /help."""
-    user = update.effective_user
-    
-    # Vérifier si l'utilisateur est bloqué
-    if user.id in blocked_users and user.id != OWNER_ID:
-        update.message.reply_text(
-            "Vous avez été bloqué et ne pouvez pas utiliser ce bot."
-        )
-        return
-    
-    # Message d'aide pour les utilisateurs normaux
-    help_text = (
-        'Commandes disponibles:\n'
-        '/start - Démarrer le bot\n'
-        '/help - Afficher ce message d\'aide\n\n'
-        'Pour utiliser ce bot, envoyez simplement un message et il sera transmis au propriétaire.'
-    )
-    
-    # Ajouter les commandes de gestion pour le propriétaire
-    if user.id == OWNER_ID:
-        help_text += (
-            '\n\nCommandes de gestion (propriétaire uniquement):\n'
-            '/block [user_id] - Bloquer un utilisateur\n'
-            '/unblock [user_id] - Débloquer un utilisateur\n'
-            '/blocklist - Afficher la liste des utilisateurs bloqués'
-        )
-    
-    update.message.reply_text(help_text)
+Flask app pour Render
 
-def block_user(update: Update, context: CallbackContext) -> None:
-    """Gestionnaire de la commande /block pour bloquer un utilisateur."""
-    user = update.effective_user
-    
-    # Vérifier que c'est bien le propriétaire qui utilise cette commande
-    if user.id != OWNER_ID:
-        update.message.reply_text("Cette commande est réservée au propriétaire du bot.")
-        return
-    
-    # Vérifier qu'un ID utilisateur a été fourni
-    if not context.args or not context.args[0].isdigit():
-        update.message.reply_text(
-            "Veuillez spécifier l'ID de l'utilisateur à bloquer.\n"
-            "Exemple: /block 123456789"
-        )
-        return
-    
-    # Récupérer l'ID utilisateur et le bloquer
-    user_id = int(context.args[0])
-    
-    # Ne pas permettre de bloquer le propriétaire
-    if user_id == OWNER_ID:
-        update.message.reply_text("Vous ne pouvez pas vous bloquer vous-même.")
-        return
-    
-    blocked_users.add(user_id)
-    save_blocked_users()
-    
-    update.message.reply_text(f"L'utilisateur avec l'ID {user_id} a été bloqué.")
+app = Flask(name) @app.route('/') def index(): return 'Bot actif'
 
-def unblock_user(update: Update, context: CallbackContext) -> None:
-    """Gestionnaire de la commande /unblock pour débloquer un utilisateur."""
-    user = update.effective_user
-    
-    # Vérifier que c'est bien le propriétaire qui utilise cette commande
-    if user.id != OWNER_ID:
-        update.message.reply_text("Cette commande est réservée au propriétaire du bot.")
-        return
-    
-    # Vérifier qu'un ID utilisateur a été fourni
-    if not context.args or not context.args[0].isdigit():
-        update.message.reply_text(
-            "Veuillez spécifier l'ID de l'utilisateur à débloquer.\n"
-            "Exemple: /unblock 123456789"
-        )
-        return
-    
-    # Récupérer l'ID utilisateur et le débloquer
-    user_id = int(context.args[0])
-    
-    if user_id in blocked_users:
-        blocked_users.remove(user_id)
-        save_blocked_users()
-        update.message.reply_text(f"L'utilisateur avec l'ID {user_id} a été débloqué.")
+def generate_alias(): return "USER" + ''.join(random.choices(string.digits, k=4))
+
+def get_alias(user_id): if str(user_id) not in users: alias = generate_alias() while alias in users.values(): alias = generate_alias() users[str(user_id)] = alias save_json(USERS_FILE, users) return users[str(user_id)]
+
+def is_allowed(user_id): return str(user_id) not in blocked
+
+def is_spamming(user_id): now = time.time() if user_id not in message_log: message_log[user_id] = [] message_log[user_id] = [t for t in message_log[user_id] if now - t < 60] if len(message_log[user_id]) >= 6: return True message_log[user_id].append(now) return False
+
+def start(update: Update, context: CallbackContext): user = update.effective_user if not is_allowed(user.id): return update.message.reply_text("Vous êtes bloqué.")
+
+if config.get("require_password") and str(user.id) not in users:
+    context.user_data['awaiting_password'] = True
+    return update.message.reply_text("Veuillez entrer le mot de passe pour accéder au salon.")
+
+alias = get_alias(user.id)
+update.message.reply_text(f"Bienvenue {alias}. Vous êtes dans le salon anonyme.")
+
+def handle_message(update: Update, context: CallbackContext): user = update.effective_user text = update.message.text
+
+if not is_allowed(user.id):
+    return update.message.reply_text("Vous êtes bloqué.")
+
+if context.user_data.get('awaiting_password'):
+    if text == config.get("password"):
+        context.user_data['awaiting_password'] = False
+        alias = get_alias(user.id)
+        update.message.reply_text(f"Mot de passe accepté. Bienvenue {alias}.")
     else:
-        update.message.reply_text(f"L'utilisateur avec l'ID {user_id} n'est pas bloqué.")
+        update.message.reply_text("Mot de passe incorrect.")
+    return
 
-def blocklist(update: Update, context: CallbackContext) -> None:
-    """Gestionnaire de la commande /blocklist pour afficher la liste des utilisateurs bloqués."""
-    user = update.effective_user
-    
-    # Vérifier que c'est bien le propriétaire qui utilise cette commande
-    if user.id != OWNER_ID:
-        update.message.reply_text("Cette commande est réservée au propriétaire du bot.")
-        return
-    
-    if not blocked_users:
-        update.message.reply_text("Aucun utilisateur n'est bloqué.")
-        return
-    
-    blocklist_text = "Liste des utilisateurs bloqués:\n"
-    for blocked_id in blocked_users:
-        blocklist_text += f"- ID: {blocked_id}\n"
-    
-    update.message.reply_text(blocklist_text)
+if str(user.id) not in users:
+    update.message.reply_text("Vous devez d'abord envoyer /start.")
+    return
 
-def forward_message(update: Update, context: CallbackContext) -> None:
-    """Transmet les messages des utilisateurs au propriétaire."""
-    user = update.effective_user
-    message = update.message
-    
-    # Ne pas traiter les messages du propriétaire comme des messages à transférer
-    if user.id == OWNER_ID:
-        return
-    
-    # Vérifier si l'utilisateur est bloqué
-    if user.id in blocked_users:
-        update.message.reply_text(
-            "Vous avez été bloqué et ne pouvez pas envoyer de messages via ce bot."
-        )
-        return
-    
-    # Préparer les informations sur l'expéditeur
-    sender_info = (
-        f"Message de: {user.first_name} {user.last_name or ''}\n"
-        f"Username: @{user.username or 'Sans username'}\n"
-        f"ID: {user.id}\n"
-        f"----------------------------\n"
-    )
-    
-    # Créer des boutons pour répondre et bloquer
-    reply_keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Répondre", callback_data=f"reply_{user.id}_{message.message_id}"),
-            InlineKeyboardButton("Bloquer", callback_data=f"block_{user.id}")
-        ]
-    ])
-    
-    # Transmettre différents types de messages
-    if message.text:
-        # Message texte
-        forwarded = context.bot.send_message(
-            chat_id=OWNER_ID,
-            text=f"{sender_info}Message: {message.text}",
-            reply_markup=reply_keyboard
-        )
-        # Enregistrer le message pour les réponses futures
-        message_registry[f"{forwarded.message_id}"] = {
-            "user_id": user.id,
-            "original_message_id": message.message_id
-        }
-    
-    elif message.photo:
-        # Photo
-        photo = message.photo[-1]  # Prendre la photo de meilleure qualité
-        caption = message.caption or "Sans légende"
-        forwarded = context.bot.send_photo(
-            chat_id=OWNER_ID,
-            photo=photo.file_id,
-            caption=f"{sender_info}Légende: {caption}",
-            reply_markup=reply_keyboard
-        )
-        message_registry[f"{forwarded.message_id}"] = {
-            "user_id": user.id,
-            "original_message_id": message.message_id
-        }
-    
-    elif message.document:
-        # Document
-        forwarded = context.bot.send_document(
-            chat_id=OWNER_ID,
-            document=message.document.file_id,
-            caption=f"{sender_info}Document: {message.document.file_name or 'Sans nom'}",
-            reply_markup=reply_keyboard
-        )
-        message_registry[f"{forwarded.message_id}"] = {
-            "user_id": user.id,
-            "original_message_id": message.message_id
-        }
-    
-    elif message.video:
-        # Vidéo
-        forwarded = context.bot.send_video(
-            chat_id=OWNER_ID,
-            video=message.video.file_id,
-            caption=f"{sender_info}Vidéo: {message.caption or 'Sans légende'}",
-            reply_markup=reply_keyboard
-        )
-        message_registry[f"{forwarded.message_id}"] = {
-            "user_id": user.id,
-            "original_message_id": message.message_id
-        }
-    
-    elif message.voice:
-        # Message vocal
-        forwarded = context.bot.send_voice(
-            chat_id=OWNER_ID,
-            voice=message.voice.file_id,
-            caption=f"{sender_info}Message vocal",
-            reply_markup=reply_keyboard
-        )
-        message_registry[f"{forwarded.message_id}"] = {
-            "user_id": user.id,
-            "original_message_id": message.message_id
-        }
-    
-    elif message.audio:
-        # Audio
-        forwarded = context.bot.send_audio(
-            chat_id=OWNER_ID,
-            audio=message.audio.file_id,
-            caption=f"{sender_info}Audio: {message.audio.title or 'Sans titre'}",
-            reply_markup=reply_keyboard
-        )
-        message_registry[f"{forwarded.message_id}"] = {
-            "user_id": user.id,
-            "original_message_id": message.message_id
-        }
-    
-    elif message.sticker:
-        # Sticker
-        forwarded = context.bot.send_sticker(
-            chat_id=OWNER_ID,
-            sticker=message.sticker.file_id
-        )
-        context.bot.send_message(
-            chat_id=OWNER_ID,
-            text=f"{sender_info}Sticker envoyé",
-            reply_to_message_id=forwarded.message_id,
-            reply_markup=reply_keyboard
-        )
-        message_registry[f"{forwarded.message_id}"] = {
-            "user_id": user.id,
-            "original_message_id": message.message_id
-        }
-    
-    else:
-        update.message.reply_text("Ce type de message n'est pas encore pris en charge.")
+if is_spamming(user.id):
+    return update.message.reply_text("Trop de messages. Veuillez ralentir.")
 
-        context.bot.send_message(
-            chat_id=OWNER_ID,
-            text=f"{sender_info}Message de type non pris en charge",
-            reply_markup=reply_keyboard
-        )
-    
-    # Confirmer la réception à l'utilisateur
-    update.message.reply_text("Votre message a été transmis.")
+alias = get_alias(user.id)
+for uid in users:
+    if uid != str(user.id) and uid not in blocked:
+        try:
+            context.bot.send_message(chat_id=int(uid), text=f"{alias} : {text}")
+        except:
+            pass
 
-def handle_reply_button(update: Update, context: CallbackContext) -> None:
-    """Gère les clics sur les boutons inline."""
-    query = update.callback_query
-    query.answer()
-    
-    # Vérifier que c'est bien le propriétaire qui répond
-    if query.from_user.id != OWNER_ID:
-        query.edit_message_reply_markup(None)
-        context.bot.send_message(
-            chat_id=query.from_user.id,
-            text="Seul le propriétaire du bot peut utiliser ces boutons."
-        )
-        return
-    
-    # Extraire les données du callback
-    data = query.data.split("_")
-    
-    # Gérer le bouton de réponse
-    if len(data) >= 3 and data[0] == "reply":
-        user_id = int(data[1])
-        
-        # Demander la réponse au propriétaire
-        context.user_data["reply_to"] = user_id
-        context.user_data["original_message"] = query.message.message_id
-        
-        query.edit_message_reply_markup(None)
-        context.bot.send_message(
-            chat_id=OWNER_ID,
-            text=f"Répondez à ce message pour envoyer votre réponse à l'utilisateur ID: {user_id}",
-            reply_to_message_id=query.message.message_id
-        )
-    
-    # Gérer le bouton de blocage
-    elif len(data) >= 2 and data[0] == "block":
-        user_id = int(data[1])
-        
-        # Ne pas permettre de bloquer le propriétaire
-        if user_id == OWNER_ID:
-            context.bot.send_message(
-                chat_id=OWNER_ID,
-                text="Vous ne pouvez pas vous bloquer vous-même."
-            )
-            return
-        
-        # Bloquer l'utilisateur
-        blocked_users.add(user_id)
-        save_blocked_users()
-        
-        query.edit_message_reply_markup(None)
-        context.bot.send_message(
-            chat_id=OWNER_ID,
-            text=f"L'utilisateur avec l'ID {user_id} a été bloqué."
-        )
+Commandes admin
 
-def handle_owner_reply(update: Update, context: CallbackContext) -> None:
-    """Gère les réponses du propriétaire aux messages transmis."""
-    user = update.effective_user
-    message = update.message
-    
-    # Vérifier que c'est bien le propriétaire qui répond
-    if user.id != OWNER_ID:
-        return
-    
-    # Vérifier si le message est une réponse
-    if message.reply_to_message:
-        replied_msg_id = str(message.reply_to_message.message_id)
-        
-        # Vérifier si le message original est dans notre registre
-        if replied_msg_id in message_registry:
-            target_user_id = message_registry[replied_msg_id]["user_id"]
-            
-            # Vérifier si l'utilisateur cible est bloqué
-            if target_user_id in blocked_users:
-                context.bot.send_message(
-                    chat_id=OWNER_ID,
-                    text=f"Cet utilisateur (ID: {target_user_id}) est bloqué. Débloquezle avec /unblock {target_user_id} pour lui envoyer des messages.",
-                    reply_to_message_id=message.message_id
-                )
-                return
-            
-            # Envoyer la réponse à l'utilisateur d'origine
-            try:
-                if message.text:
-                    context.bot.send_message(
-                        chat_id=target_user_id,
-                        text=f"Réponse du propriétaire: {message.text}"
-                    )
-                elif message.photo:
-                    photo = message.photo[-1]
-                    caption = message.caption or "Sans légende"
-                    context.bot.send_photo(
-                        chat_id=target_user_id,
-                        photo=photo.file_id,
-                        caption=f"Réponse du propriétaire: {caption}"
-                    )
-                elif message.document:
-                    context.bot.send_document(
-                        chat_id=target_user_id,
-                        document=message.document.file_id,
-                        caption=f"Réponse du propriétaire: {message.caption or ''}"
-                    )
-                elif message.video:
-                    context.bot.send_video(
-                        chat_id=target_user_id,
-                        video=message.video.file_id,
-                        caption=f"Réponse du propriétaire: {message.caption or ''}"
-                    )
-                elif message.voice:
-                    context.bot.send_voice(
-                        chat_id=target_user_id,
-                        voice=message.voice.file_id,
-                        caption="Réponse vocale du propriétaire"
-                    )
-                elif message.audio:
-                    context.bot.send_audio(
-                        chat_id=target_user_id,
-                        audio=message.audio.file_id,
-                        caption=f"Réponse audio du propriétaire: {message.caption or ''}"
-                    )
-                elif message.sticker:
-                    context.bot.send_sticker(
-                        chat_id=target_user_id,
-                        sticker=message.sticker.file_id
-                    )
-                else:
-                    context.bot.send_message(
-                        chat_id=target_user_id,
-                        text="Le propriétaire a répondu avec un type de message non pris en charge."
-                    )
-                
-                # Confirmer l'envoi au propriétaire
-                context.bot.send_message(
-                    chat_id=OWNER_ID,
-                    text=f"Votre réponse a été envoyée à l'utilisateur ID: {target_user_id}",
-                    reply_to_message_id=message.message_id
-                )
-            
-            except Exception as e:
-                context.bot.send_message(
-                    chat_id=OWNER_ID,
-                    text=f"Erreur lors de l'envoi de la réponse: {str(e)}",
-                    reply_to_message_id=message.message_id
-                )
+def help_command(update: Update, context: CallbackContext): if update.effective_user.id != OWNER_ID: return update.message.reply_text( "/help - Affiche cette aide\n" "/users - Liste des utilisateurs\n" "/block <alias> - Bloque un utilisateur\n" "/unblock <alias> - Débloque un utilisateur\n" "/stats - Stats\n" "/setpassword <mot> - Active le mot de passe\n" "/disablepassword - Désactive le mot de passe" )
 
-def error_handler(update: Update, context: CallbackContext) -> None:
-    """Gère les erreurs rencontrées par le dispatcher."""
-    logger.exception("Une erreur est survenue pendant le traitement de la mise à jour.", exc_info=context.error)
-    if update and update.effective_chat:
-        context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="Une erreur est survenue. Veuillez réessayer plus tard."
-        )
+def users_command(update: Update, context: CallbackContext): if update.effective_user.id != OWNER_ID: return msg = "Utilisateurs:\n" for uid, alias in users.items(): status = "(bloqué)" if uid in blocked else "(actif)" msg += f"{alias} {status}\n" update.message.reply_text(msg)
 
-def run_flask():
-    """Exécute l'application Flask pour le ping."""
-    app.run(host='0.0.0.0', port=PORT)
+def block_command(update: Update, context: CallbackContext): if update.effective_user.id != OWNER_ID: return if not context.args: return update.message.reply_text("Usage: /block USER1234") alias = context.args[0] for uid, a in users.items(): if a == alias: blocked.add(uid) save_json(BLOCKED_FILE, list(blocked)) return update.message.reply_text(f"{alias} bloqué.") update.message.reply_text("Alias introuvable.")
 
-def main() -> None:
-    """Fonction principale pour démarrer le bot."""
-    # Charger la liste des utilisateurs bloqués
-    load_blocked_users()
-    
-    # Créer l'Updater et passer le token du bot
-    updater = Updater(TOKEN)
-    
-    # Récupérer le dispatcher pour enregistrer les gestionnaires
-    dispatcher = updater.dispatcher
-    
-    # Gestionnaires de commandes
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("help", help_command))
-    
-    # Gestionnaires pour les commandes de blocage
-    dispatcher.add_handler(CommandHandler("block", block_user))
-    dispatcher.add_handler(CommandHandler("unblock", unblock_user))
-    dispatcher.add_handler(CommandHandler("blocklist", blocklist))
-    
-    # Gestionnaire pour les boutons inline
-    dispatcher.add_handler(CallbackQueryHandler(handle_reply_button))
-    
-    # Gestionnaire pour les réponses du propriétaire
-    dispatcher.add_handler(MessageHandler(
-        Filters.reply & Filters.user(OWNER_ID),
-        handle_owner_reply
-    ))
-    
-    # Gestionnaire pour tous les autres messages
-    dispatcher.add_handler(MessageHandler(
-        Filters.text | Filters.photo | Filters.document | Filters.video |
-        Filters.voice | Filters.audio | Filters.sticker,
-        forward_message
-    ))
-    
-    # Gestionnaire d'erreurs
-    dispatcher.add_error_handler(error_handler)
-    
-    # Démarrer le serveur Flask dans un thread séparé pour le ping
-    flask_thread = threading.Thread(target=run_flask)
-    PORT = int(os.environ.get('PORT', 10000))
-    flask_thread.daemon = True
-    flask_thread.start()
-    
-    # Démarrer le bot
-    updater.start_polling()
-    logger.info("Bot démarré. Appuyez sur Ctrl+C pour arrêter.")
-    
-    # Maintenir le bot en fonctionnement jusqu'à l'interruption
-    updater.idle()
+def unblock_command(update: Update, context: CallbackContext): if update.effective_user.id != OWNER_ID: return if not context.args: return update.message.reply_text("Usage: /unblock USER1234") alias = context.args[0] for uid, a in users.items(): if a == alias: blocked.discard(uid) save_json(BLOCKED_FILE, list(blocked)) return update.message.reply_text(f"{alias} débloqué.") update.message.reply_text("Alias introuvable.")
 
-if __name__ == '__main__':
-    main()
+def stats_command(update: Update, context: CallbackContext): if update.effective_user.id != OWNER_ID: return update.message.reply_text( f"Total utilisateurs: {len(users)}\nBloqués: {len(blocked)}" )
+
+def set_password(update: Update, context: CallbackContext): if update.effective_user.id != OWNER_ID: return if not context.args: return update.message.reply_text("Usage: /setpassword mot") config["require_password"] = True config["password"] = context.args[0] save_json(CONFIG_FILE, config) update.message.reply_text("Mot de passe activé.")
+
+def disable_password(update: Update, context: CallbackContext): if update.effective_user.id != OWNER_ID: return config["require_password"] = False config["password"] = "" save_json(CONFIG_FILE, config) update.message.reply_text("Mot de passe désactivé.")
+
+def main(): updater = Updater(TOKEN) dp = updater.dispatcher
+
+dp.add_handler(CommandHandler("start", start))
+dp.add_handler(CommandHandler("help", help_command))
+dp.add_handler(CommandHandler("users", users_command))
+dp.add_handler(CommandHandler("block", block_command))
+dp.add_handler(CommandHandler("unblock", unblock_command))
+dp.add_handler(CommandHandler("stats", stats_command))
+dp.add_handler(CommandHandler("setpassword", set_password))
+dp.add_handler(CommandHandler("disablepassword", disable_password))
+dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+
+flask_thread = threading.Thread(target=app.run, kwargs={'host': '0.0.0.0', 'port': PORT})
+flask_thread.daemon = True
+flask_thread.start()
+
+updater.start_polling()
+updater.idle()
+
+if name == 'main': main()
