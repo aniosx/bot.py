@@ -31,7 +31,12 @@ load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 if not TOKEN:
     raise ValueError("رمز TELEGRAM_TOKEN غير موجود في متغيرات البيئة.")
-OWNER_ID = int(os.getenv('OWNER_ID', '144262846'))
+
+OWNER_ID = os.getenv('OWNER_ID')
+if not OWNER_ID or not OWNER_ID.isdigit():
+    raise ValueError("OWNER_ID غير موجود أو غير صالح في متغيرات البيئة.")
+OWNER_ID = int(OWNER_ID)
+
 PORT = int(os.environ.get('PORT', 8080))
 
 # قاموس لتخزين الرسائل ومرسليها
@@ -85,9 +90,14 @@ def start(update: Update, context: CallbackContext) -> None:
     )
     
     if user.id != OWNER_ID:
+        # إرسال اسم المستخدم الأول والأخير ورابط حسابه فقط
+        full_name = f"{user.first_name} {user.last_name or ''}".strip()
+        username = f"@{user.username}" if user.username else full_name
+        user_link = f"<a href='tg://user?id={user.id}'>{username}</a>"
         context.bot.send_message(
             chat_id=OWNER_ID,
-            text=f"مستخدم جديد: {user.first_name} (@{user.username or 'بدون اسم مستخدم'}) [ID: {user.id}] بدأ استخدام البوت."
+            text=f"مستخدم جديد: {user_link} بدأ استخدام البوت.",
+            parse_mode=ParseMode.HTML
         )
 
 def help_command(update: Update, context: CallbackContext) -> None:
@@ -195,7 +205,9 @@ def forward_message(update: Update, context: CallbackContext) -> None:
         update.message.reply_text("تم حظرك ولا يمكنك إرسال رسائل عبر هذا البوت.")
         return
     
-    sender_info = f"<a href='tg://user?id={user.id}'>{user.first_name}</a>\n"
+    full_name = f"{user.first_name} {user.last_name or ''}".strip()
+    username = f"@{user.username}" if user.username else full_name
+    sender_info = f"<a href='tg://user?id={user.id}'>{username}</a>\n"
     
     reply_keyboard = InlineKeyboardMarkup([
         [
@@ -253,7 +265,7 @@ def forward_message(update: Update, context: CallbackContext) -> None:
             reply_markup=reply_keyboard
         )
         message_registry[f"{forwarded.message_id}"] = {
-            "user_id": user.id,
+            "user_id" : user.id,
             "original_message_id": message.message_id
         }
     
