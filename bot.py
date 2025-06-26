@@ -85,7 +85,7 @@ def start(update: Update, context: CallbackContext) -> None:
         return
     
     update.message.reply_text(
-        f'مرحبًا {user.first_name}! أنا بوت لنقل الرسائل. '
+        f'مرحبًا {user.first_name}! '
         f'أرسل لي رسالة وسيتم إرسالها إلى صاحب البوت.'
     )
     
